@@ -1,12 +1,54 @@
-import pygame
-import random
-import sys
+import array
 import math
 import os
+import random
+import sys
+import pygame
 
 os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY'] = '0'
 
 pygame.init()
+
+# Audio initialization
+sound_jump = None
+sound_tick = None
+sound_win = None
+
+try:
+    pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+
+    def create_tone(freq, duration, volume=0.3):
+        sample_rate = 22050
+        n_samples = int(sample_rate * duration)
+        buf = array.array('h')
+        for i in range(n_samples):
+            val = int(math.sin(2.0 * math.pi * freq * (i / sample_rate)) * 32767 * volume)
+            buf.append(val)
+        return pygame.mixer.Sound(buffer=buf)
+
+    def create_fanfare():
+        sample_rate = 22050
+        notes = [(440, 0.12), (554, 0.12), (659, 0.12), (880, 0.35)]
+        buf = array.array('h')
+        for freq, duration in notes:
+            n_samples = int(sample_rate * duration)
+            for i in range(n_samples):
+                val = int(math.sin(2.0 * math.pi * freq * (i / sample_rate)) * 32767 * 0.4)
+                buf.append(val)
+        return pygame.mixer.Sound(buffer=buf)
+
+    sound_tick = create_tone(850, 0.03, 0.2)
+    sound_jump = create_tone(380, 0.15, 0.35)
+    sound_win = create_fanfare()
+except Exception:
+    pass
+
+def play_sfx(s):
+    try:
+        if s:
+            s.play()
+    except Exception:
+        pass
 
 info = pygame.display.Info()
 device_w = info.current_w
@@ -89,6 +131,7 @@ shield_timer = 0
 speed_timer = 0
 
 run_anim_frame = 0
+tick_sound_timer = 0
 
 distance_meters = 0.0
 total_coins = 0
@@ -229,7 +272,7 @@ def reset_game():
     global coins, track_stars, n_cards, b_cards, distance_meters, shield_timer, speed_timer
     global platform_queue, platform_milestone_spawned, n_card_spawned_milestone, b_card_spawned_milestone
     global bonus_claimed_milestone, bonus_msg_timer, target_distance, stars_collected_in_run, finish_line_x
-    global star1_spawned, star2_spawned
+    global star1_spawned, star2_spawned, tick_sound_timer
     
     player_y = ground_y - player_height
     is_jumping = False
@@ -237,6 +280,7 @@ def reset_game():
     distance_meters = 0.0
     shield_timer = 0
     speed_timer = 0
+    tick_sound_timer = 0
     bonus_claimed_milestone = 0
     bonus_msg_timer = 0
     stars_collected_in_run = 0
@@ -264,7 +308,7 @@ start_play_btn = pygame.Rect(V_WIDTH // 2 - 105, 185, 210, 50)
 start_levels_btn = pygame.Rect(V_WIDTH // 2 - 105, 255, 210, 50)
 start_store_btn = pygame.Rect(V_WIDTH // 2 - 105, 325, 210, 50)
 
-# GAMEOVER BUTTONS: TRY AGAIN & HOME
+# GAMEOVER BUTTONS
 gameover_restart_btn = pygame.Rect(V_WIDTH // 2 - 120, 290, 240, 50)
 gameover_home_btn = pygame.Rect(V_WIDTH // 2 - 120, 360, 240, 50)
 
@@ -485,8 +529,8 @@ while running:
                 if not is_jumping:
                     is_jumping = True
                     velocity_y = -jump_velocity
+                    play_sfx(sound_jump)
 
-    # 1. SPLASH SCREEN
     if game_state == "SPLASH":
         loading_progress += 1.2
         if loading_progress >= 100.0:
@@ -513,9 +557,16 @@ while running:
         pct_text = font_text.render(f"Loading... {int(loading_progress)}%", True, WHITE)
         screen.blit(pct_text, (V_WIDTH // 2 - pct_text.get_width() // 2, bar_y + 30))
 
-    # 2. GAMEPLAY UPDATE
     elif game_state == "PLAYING":
         run_anim_frame += 0.4
+
+        if not is_jumping:
+            tick_sound_timer += 1
+            if tick_sound_timer >= 15:
+                play_sfx(sound_tick)
+                tick_sound_timer = 0
+        else:
+            tick_sound_timer = 0
 
         current_floor_y = ground_y
         for plat in upper_platforms:
@@ -636,6 +687,7 @@ while running:
                 level_stars[current_level] = max(level_stars[current_level], stars_collected_in_run)
                 if current_level == unlocked_levels and unlocked_levels < max_levels:
                     unlocked_levels += 1
+                play_sfx(sound_win)
                 game_state = "LEVEL_COMPLETE"
 
         player_rect = pygame.Rect(player_x, player_y, player_width, player_height)
@@ -698,7 +750,6 @@ while running:
                     if shield_timer <= 0:
                         game_state = "GAMEOVER"
 
-    # RENDERING
     if game_state not in ("SPLASH", "LEVEL_SELECT"):
         screen.fill(SKY_BLUE)
         pygame.draw.rect(screen, GROUND_COLOR, (0, ground_y, V_WIDTH, V_HEIGHT - ground_y))
@@ -711,7 +762,6 @@ while running:
                 pygame.draw.circle(screen, DANGER_BALL_COLOR, (int(plat["danger_x"]), upper_path_y - danger_ball_radius), danger_ball_radius)
                 pygame.draw.circle(screen, BLACK, (int(plat["danger_x"]), upper_path_y - danger_ball_radius), danger_ball_radius, 2)
 
-    # 3. HOME SCREEN (PLAY, LEVELS, STORE + SELECTED SKIN ON RIGHT SIDE)
     if game_state == "START":
         title_text = font_title.render("THE SPEED RUN", True, BLACK)
         screen.blit(title_text, (V_WIDTH // 2 - title_text.get_width() // 2, 50))
@@ -740,14 +790,12 @@ while running:
         coin_txt = font_text.render(f"M Coins: {total_coins}", True, (180, 130, 0))
         screen.blit(coin_txt, (V_WIDTH - coin_txt.get_width() - 25, 25))
 
-        # Selected Skin Standing on the Right Side
         preview_x = V_WIDTH - 170
         preview_y = ground_y - player_height
         draw_animated_character(preview_x, preview_y, selected_skin, 0)
         skin_name_lbl = font_small.render(skins[selected_skin]["name"], True, BLACK)
         screen.blit(skin_name_lbl, (preview_x + player_width // 2 - skin_name_lbl.get_width() // 2, preview_y - 25))
 
-    # 4. LEVEL SELECTION SCREEN
     elif game_state == "LEVEL_SELECT":
         screen.fill((235, 240, 245))
 
@@ -796,7 +844,6 @@ while running:
                     screen.blit(num_surf, (rect.centerx - num_surf.get_width() // 2, rect.y + 12))
                     draw_lock_icon(screen, rect.centerx, rect.bottom - 24)
 
-    # 5. STORE SCREEN
     elif game_state == "STORE":
         screen.fill((240, 240, 240))
         total_store_pages = (len(skins) + 5) // 6
@@ -938,7 +985,6 @@ while running:
         menu_lbl = font_text.render("MAIN MENU", True, WHITE)
         screen.blit(menu_lbl, (win_menu_btn.centerx - menu_lbl.get_width() // 2, win_menu_btn.centery - menu_lbl.get_height() // 2))
 
-    # 6. GAMEOVER SCREEN (TRY AGAIN & HOME BUTTONS)
     elif game_state == "GAMEOVER":
         gameover_text = font_title.render("GAME OVER", True, (200, 0, 0))
         final_score_text = font_text.render(f"Level {current_level} Failed at {int(distance_meters)} m", True, BLACK)
@@ -948,13 +994,11 @@ while running:
         screen.blit(final_score_text, (V_WIDTH // 2 - final_score_text.get_width() // 2, 150))
         screen.blit(coins_collected_text, (V_WIDTH // 2 - coins_collected_text.get_width() // 2, 190))
 
-        # TRY AGAIN Button
         pygame.draw.rect(screen, GREEN_BTN, gameover_restart_btn, border_radius=12)
         pygame.draw.rect(screen, BLACK, gameover_restart_btn, 3, border_radius=12)
         restart_lbl = font_text.render("TRY AGAIN", True, WHITE)
         screen.blit(restart_lbl, (gameover_restart_btn.centerx - restart_lbl.get_width() // 2, gameover_restart_btn.centery - restart_lbl.get_height() // 2))
 
-        # HOME Button
         pygame.draw.rect(screen, BLUE_BTN, gameover_home_btn, border_radius=12)
         pygame.draw.rect(screen, BLACK, gameover_home_btn, 3, border_radius=12)
         home_lbl = font_text.render("HOME", True, WHITE)
@@ -963,3 +1007,5 @@ while running:
     scaled_surface = pygame.transform.scale(screen, (REAL_W, REAL_H))
     real_screen.blit(scaled_surface, (0, 0))
     pygame.display.flip()
+
+pygame.quit()
